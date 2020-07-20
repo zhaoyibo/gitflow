@@ -1,0 +1,292 @@
+#compdef gitflow
+
+_gitflow ()
+{
+	local curcontext="$curcontext" state line
+	typeset -A opt_args
+
+	_arguments -C \
+		':command:->command' \
+		'*::options:->options'
+
+	case $state in
+		(command)
+
+			local -a subcommands
+			subcommands=(
+				'feature: 管理功能分支'
+				'hotfix: 管理修复分支'
+				'config: 配置 gitflow'
+				'version: 显示版本号'
+				'add: 添加文件到暂存区'
+				'commit: 提交'
+				'push: 推到远端'
+				'tag: 打 tag'
+				'taglist: 显示最近的 tag'
+				'merge: 取消 merge'
+				'checkout: 检出指定分支'
+				'diff: 对比差异'
+			)
+			_describe -t commands 'gitflow' subcommands
+		;;
+
+		(options)
+			case $line[1] in
+
+				(version)
+					;;
+
+				(config)
+					;;
+
+				(hotfix|h)
+					__gitflow-hotfix
+					;;
+
+				(feature|f)
+					__gitflow-feature
+					;;
+				(add)
+					_arguments \
+					'*:files:_files'\
+					;;
+				(commit|cm)
+					_arguments -s \
+						-a'[-a]' \
+						-m'[-m]'\
+					;;
+				(push)
+					;;
+				(tag)
+					;;
+				(taglist)
+					;;
+				(merge)
+					_arguments \
+						--abort'[取消merge]'\
+					;;
+				(checkout|co)
+					_arguments \
+						':branch:__git_branch_names'\
+					;;
+				(diff)
+					_arguments \
+						':branch:__git_branch_names'\
+					;;
+			esac
+		;;
+	esac
+}
+
+__gitflow-hotfix ()
+{
+	local curcontext="$curcontext" state line
+	typeset -A opt_args
+
+	_arguments -C \
+		':command:->command' \
+		'*::options:->options'
+
+	case $state in
+		(command)
+
+			local -a subcommands
+			subcommands=(
+				'start: 开启一个修复分支'
+				'list: 列出修复分支'
+				'diff: 对比差异'
+				'pull-request: 创建一个 pr'
+				'help: 显示帮助'
+				'mergeto: 将当前分支合并到指定分支'
+				'merge: 将指定的修复分支合并到指定分支'
+				'checkout: 检出指定的功能分支'
+				'delete: 删除指定的功能分支'
+				'sync: 将指定分支同步到当前的修复分支'
+			)
+			_describe -t commands 'gitflow hotfix' subcommands
+		;;
+
+		(options)
+			case $line[1] in
+				(delete|del)
+					_arguments \
+						-r'[删除远端分支]' \
+						':branch:__git_flow_hotfix_list'\
+				;;
+				(diff)
+					_arguments \
+						':branch:__git_branch_names'\
+				;;
+				(checkout|co)
+					_arguments \
+						':branch:__git_flow_hotfix_list'\
+				;;
+				(mergeto|mt)
+					_arguments \
+						':branch:__git_branch_names'\
+				;;
+				(merge)
+					_arguments \
+						':branch:__git_flow_hotfix_list'\
+						':branch:__git_branch_names'\
+				;;
+				(sync)
+					_arguments \
+						':branch:__git_branch_names'\
+				;;
+			esac
+		;;
+	esac
+}
+
+__gitflow-feature ()
+{
+	local curcontext="$curcontext" state line
+	typeset -A opt_args
+
+	_arguments -C \
+		':command:->command' \
+		'*::options:->options'
+
+	case $state in
+		(command)
+
+			local -a subcommands
+			local -a subcommands
+			subcommands=(
+				'start: 开启一个修复分支'
+				'list: 列出修复分支'
+				'diff: 对比差异'
+				'pull-request: 创建一个 pr'
+				'help: 显示帮助'
+				'mergeto: 将当前分支合并到指定分支'
+				'merge: 将指定的修复分支合并到指定分支'
+				'checkout: 检出指定的功能分支'
+				'delete: 删除指定的功能分支'
+				'sync: 将指定分支同步到当前的修复分支'
+			)
+			_describe -t commands 'gitflow feature' subcommands
+		;;
+
+		(options)
+			case $line[1] in
+				(delete|del)
+					_arguments \
+						-r'[删除远端分支]' \
+						':branch:__git_flow_feature_list'\
+				;;
+				(diff)
+					_arguments \
+						':branch:__git_branch_names'\
+				;;
+				(checkout|co)
+					_arguments \
+						':branch:__git_flow_feature_list'\
+				;;
+				(mergeto|mt)
+					_arguments \
+						':branch:__git_branch_names'\
+				;;
+				(merge)
+					_arguments \
+						':branch:__git_flow_feature_list'\
+						':branch:__git_branch_names'\
+				;;
+				(sync)
+					_arguments \
+						':branch:__git_branch_names'\
+				;;
+			esac
+		;;
+	esac
+}
+
+__git_flow_version_list ()
+{
+	local expl
+	declare -a versions
+
+	versions=(${${(f)"$(_call_program versions gitflow release list 2> /dev/null | tr -d ' |*')"}})
+	__git_command_successful || return
+
+	_wanted versions expl 'version' compadd $versions
+}
+
+__git_flow_feature_list ()
+{
+	local expl
+	declare -a features
+
+	features=(${${(f)"$(_call_program features gitflow feature list 2> /dev/null | tr -d ' |*')"}})
+	__git_command_successful || return
+
+	_wanted features expl 'feature' compadd $features
+}
+
+__git_remotes () {
+	local expl gitdir remotes
+
+	gitdir=$(_call_program gitdir git rev-parse --git-dir 2>/dev/null)
+	__git_command_successful || return
+
+	remotes=(${${(f)"$(_call_program remotes git config --get-regexp '"^remote\..*\.url$"')"}//#(#b)remote.(*).url */$match[1]})
+	__git_command_successful || return
+
+	# TODO: Should combine the two instead of either or.
+	if (( $#remotes > 0 )); then
+		_wanted remotes expl remote compadd $* - $remotes
+	else
+		_wanted remotes expl remote _files $* - -W "($gitdir/remotes)" -g "$gitdir/remotes/*"
+	fi
+}
+
+__git_flow_hotfix_list ()
+{
+	local expl
+	declare -a hotfixes
+
+	hotfixes=(${${(f)"$(_call_program hotfixes gitflow hotfix list 2> /dev/null | tr -d ' |*')"}})
+	__git_command_successful || return
+
+	_wanted hotfixes expl 'hotfix' compadd $hotfixes
+}
+
+__git_flow_support_list ()
+{
+	local expl
+	declare -a support
+
+	support=(${${(f)"$(_call_program support gitflow support list 2> /dev/null | tr -d ' |*')"}})
+	__git_command_successful || return
+
+	_wanted hotfixes expl 'support' compadd $support
+}
+
+
+__git_branch_names () {
+	local expl
+	declare -a branch_names
+
+	branch_names=(${${(f)"$(_call_program branchrefs git for-each-ref --format='"%(refname)"' refs/heads 2>/dev/null)"}#refs/heads/})
+	__git_command_successful || return
+
+	_wanted branch-names expl branch-name compadd $* - $branch_names
+}
+
+__git_command_successful () {
+	if (( ${#pipestatus:#0} > 0 )); then
+		_message 'not a git repository'
+		return 1
+	fi
+	return 0
+}
+
+_gitflow "$@"
+
+# Local Variables:
+# mode: Shell-Script
+# sh-indentation: 2
+# indent-tabs-mode: nil
+# sh-basic-offset: 2
+# End:
+# vim: ft=zsh sw=2 ts=2 et

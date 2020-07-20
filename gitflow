@@ -1,0 +1,1090 @@
+#!/usr/bin/env sh
+
+ORIGIN="origin"
+MASTER_BRANCH="master"
+TEST_BRANCH="test"
+DEVELOP_BRANCH="develop"
+
+########## common start
+
+#DOT_GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
+
+echo_black() {
+    echo "\033[30m""$*""\033[0m"
+}
+echo_red() {
+    echo "\033[31m""$*""\033[0m"
+}
+echo_green() {
+    echo "\033[32m""$*""\033[0m"
+}
+echo_yellow() {
+    echo "\033[33m""$*""\033[0m"
+}
+echo_blue() {
+    echo "\033[34m""$*""\033[0m"
+}
+echo_purple() {
+    echo "\033[35m""$*""\033[0m"
+}
+
+warn() { echo_yellow "$@" >&2; }
+
+die() {
+    echo_red "$@"
+    exit 1
+}
+
+escape() {
+    echo "$1" | sed 's/\([\.\$\*]\)/\\\1/g'
+}
+
+# basic math
+min() { [ "$1" -le "$2" ] && echo "$1" || echo "$2"; }
+max() { [ "$1" -ge "$2" ] && echo "$1" || echo "$2"; }
+
+# set logic
+has() {
+    local item=$1
+    shift
+    echo " "$*" " | grep -q " $(escape $item) "
+}
+
+git_local_branches() { git branch --no-color | sed 's/^[* ] //'; }
+git_remote_branches() { git branch -r --no-color | sed 's/^[* ] //'; }
+git_all_branches() { (
+    git branch --no-color
+    git branch -r --no-color
+) | sed 's/^[* ] //'; }
+git_all_tags() { git tag; }
+
+git_current_branch() {
+    git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g'
+}
+
+git_repo_is_headless() {
+    ! git rev-parse --quiet --verify HEAD >/dev/null 2>&1
+}
+
+git_local_branch_exists() {
+    has $1 $(git_local_branches)
+}
+
+git_remote_branch_exists() {
+    has $1 $(git_remote_branches)
+}
+
+git_branch_exists() {
+    has $1 $(git_all_branches)
+}
+
+git_tag_exists() {
+    has $1 $(git_all_tags)
+}
+
+git_is_clean_working_tree() {
+    if ! git diff --no-ext-diff --ignore-submodules --quiet --exit-code; then
+        return 1
+    elif ! git diff-index --cached --quiet --ignore-submodules HEAD --; then
+        return 2
+    else
+        return 0
+    fi
+}
+
+#
+# git_compare_branches()
+#
+# Tests whether branches and their "origin" counterparts have diverged and need
+# merging first. It returns error codes to provide more detail, like so:
+#
+# 0    Branch heads point to the same commit
+# 1    First given branch needs fast-forwarding
+# 2    Second given branch needs fast-forwarding
+# 3    Branch needs a real merge
+# 4    There is no merge base, i.e. the branches have no common ancestors
+#
+git_compare_branches() {
+    local commit1=$(git rev-parse "$1")
+    local commit2=$(git rev-parse "$2")
+    if [ "$commit1" != "$commit2" ]; then
+        local base=$(git merge-base "$commit1" "$commit2")
+        if [ $? -ne 0 ]; then
+            return 4
+        elif [ "$commit1" = "$base" ]; then
+            return 1
+        elif [ "$commit2" = "$base" ]; then
+            return 2
+        else
+            return 3
+        fi
+    else
+        return 0
+    fi
+}
+
+#
+# Assertions for use in git-flow subcommands
+#
+
+require_git_repo() {
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        die "fatal: 这不是一个 git 仓库的目录"
+    fi
+}
+
+require_clean_working_tree() {
+    git_is_clean_working_tree
+    local result=$?
+    if [ $result -eq 1 ]; then
+        die "fatal: 工作区包含未暂存的修改. 已取消."
+    fi
+    if [ $result -eq 2 ]; then
+        die "fatal: 索引包含未提交的修改. 已取消."
+    fi
+}
+
+require_local_branch() {
+    if ! git_local_branch_exists $1; then
+        die "fatal: 本地分支 '$1' 不存在."
+    fi
+}
+
+require_remote_branch() {
+    if ! has $1 $(git_remote_branches); then
+        die "远端分支 '$1' 不存在."
+    fi
+}
+
+require_branch() {
+    if ! has $1 $(git_all_branches); then
+        die "分支 '$1' 不存在."
+    fi
+}
+
+require_branch_absent() {
+    if has $1 $(git_all_branches); then
+        die "分支 '$1' 已存在。请输入一个其他的名字。"
+    fi
+}
+
+require_tag_absent() {
+    for tag in $(git_all_tags); do
+        if [ "$1" = "$tag" ]; then
+            die "Tag '$1' 已存在. 请输入一个其他的名字。"
+        fi
+    done
+}
+
+require_branches_equal() {
+    require_local_branch "$1"
+    require_remote_branch "$2"
+    git_compare_branches "$1" "$2"
+    local status=$?
+    if [ $status -gt 0 ]; then
+        warn "Branches '$1' and '$2' have diverged."
+        if [ $status -eq 1 ]; then
+            die "And branch '$1' may be fast-forwarded."
+        elif [ $status -eq 2 ]; then
+            # Warn here, since there is no harm in being ahead
+            warn "And local branch '$1' is ahead of '$2'."
+        else
+            die "Branches need merging first."
+        fi
+    fi
+}
+
+#
+# git_is_branch_merged_into()
+#
+# Checks whether branch $1 is succesfully merged into $2
+#
+git_is_branch_merged_into() {
+    local subject=$1
+    local base=$2
+    local all_merges="$(git branch --no-color --contains $subject | sed 's/^[* ] //')"
+    has $base $all_merges
+}
+
+git_do() {
+    show_commands=true
+    # equivalent to git, used to indicate actions that make modifications
+    if $show_commands; then
+        echo_purple "→ git "$*"" >&2
+    fi
+    git "$@"
+}
+
+function urlencode() {
+    local length="${#1}"
+    for ((i = 0; i < length; i++)); do
+        local c="${1:i:1}"
+        case $c in
+        [a-zA-Z0-9.~_-]) printf "$c" ;;
+        *) printf "$c" | xxd -p -c1 | while read x; do printf "%%%s" "$x"; done ;;
+        esac
+    done
+}
+
+get_project() {
+    #echo $(git config --local --get remote.origin.url | awk -F'[.:]' '{print $4}')
+    local url=$(git config --local --get remote.origin.url)
+    if [ ${url:0:4} = 'http' ]; then
+        echo $url | awk -F/ '{print $4"/"$5}'
+    elif [ ${url:0:3} = 'git' ]; then
+        echo $url | awk -F'[.:]' '{print $4}'
+    else
+        die "无法识别协议！"
+    fi
+}
+
+########## common end
+
+
+init() {
+
+    # assure that we are not working in a repo with local changes
+    git_repo_is_headless || require_clean_working_tree
+
+    pull_and_stay $MASTER_BRANCH
+
+    # develop
+    if ! git_local_branch_exists "$DEVELOP_BRANCH"; then
+        if git_remote_branch_exists "$ORIGIN/$DEVELOP_BRANCH"; then
+            git_do checkout -b "$DEVELOP_BRANCH" "$ORIGIN/$DEVELOP_BRANCH"
+        else
+            git_do checkout -b "$DEVELOP_BRANCH"
+            git_do push --set-upstream origin "$DEVELOP_BRANCH"
+        fi
+        pull_and_stay $MASTER_BRANCH
+    fi
+
+    # test
+    if ! git_local_branch_exists "$TEST_BRANCH"; then
+        if git_remote_branch_exists "$ORIGIN/$TEST_BRANCH"; then
+            git_do checkout -b "$TEST_BRANCH" "$ORIGIN/$TEST_BRANCH"
+        else
+            git_do checkout -b "$TEST_BRANCH"
+            git_do push --set-upstream origin "$TEST_BRANCH"
+        fi
+        pull_and_stay $MASTER_BRANCH
+    fi
+}
+
+cmd_list() {
+    feature_branches=$(echo "$(git_local_branches)" | grep "^$1")
+    if [ -z "$feature_branches" ]; then
+        warn "当前没有任何 ${1%/*} 分支."
+        warn ""
+        warn "你可以通过以下命令开启一个 ${1%/*} 分支:"
+        warn ""
+        warn "    gitflow ${1%/*} start <name> [<base>]"
+        warn ""
+        exit 0
+    fi
+    current_branch=$(git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g')
+    short_names=$(echo "$feature_branches" | sed "s ^$1  g")
+    # determine column width first
+    local width=0
+    local branch
+    for branch in $short_names; do
+        local len=${#branch}
+        width=$(max $width $len)
+    done
+    width=$(($width + 3))
+
+    local branch
+    for branch in $short_names; do
+        local fullname=$1$branch
+        # local base=$(git merge-base "$fullname" "$MASTER_BRANCH")
+        # local develop_sha=$(git rev-parse "$MASTER_BRANCH")
+        # local branch_sha=$(git rev-parse "$fullname")
+        if [ "$fullname" = "$current_branch" ]; then
+            printf "* "
+        else
+            printf "  "
+        fi
+
+        printf "%s" "$branch"
+
+        echo
+    done
+}
+
+cmd_start() {
+    if [ "$2" = "" ]; then
+        warn "缺少参数 <name>"
+        usage
+        exit 1
+    fi
+
+    local branch=$1$2
+    local base=${3:-$MASTER_BRANCH}
+
+    if [ "$base" = $DEVELOP_BRANCH -o "$base" = $TEST_BRANCH ]; then
+        die "不允许从下游分支 '$base' 检出分支"
+    fi
+
+    # sanity checks
+    require_clean_working_tree
+
+    if ! git_branch_exists "$ORIGIN/$base"; then
+        # require_branches_equal "$base" "$ORIGIN/$base"
+        die "远端仓库不存在分支 $base"
+    fi
+
+    pull_and_stay $base
+
+    # create branch
+    if ! git_do checkout -b "$branch" "$base"; then
+        die "无法创建 ${1%/*} branch '$branch'"
+    fi
+
+    git_do push --set-upstream origin $branch
+
+    echo_blue
+    echo_blue "操作概要:"
+    echo_blue "- 一个基于 '$base' 最新代码的新分支 '$branch' 已经被创建"
+    echo_blue "- 新分支 '$branch' 已经被 push 到了远端"
+    echo_blue "- 你现在已处于新分支 '$branch' 上"
+    echo_blue
+    echo_blue "现在, 开始提交你的 feature，当完成的时候，你可以通过以下任一命令将你的 feature 合并到其他分支:"
+    echo_blue
+    echo_blue "     gitflow ${1%/*} mergeto <develop|test|master>"
+    echo_blue "     gitflow ${1%/*} merge $2 <develop|test|master>"
+    echo_blue
+}
+
+pull_and_back() {
+    local current_branch=$(git_current_branch)
+
+    git_do checkout $1
+    git_do pull
+    if [ $? -ne 0 ]; then
+        die "在 $1 分支 pull 最新代码时遇到了冲突，请先手动解决"
+    fi
+
+    git_do checkout $current_branch
+}
+
+pull_and_stay() {
+    git_do checkout $1
+    git_do pull
+    if [ $? -ne 0 ]; then
+        die "在 $1 分支 pull 最新代码时遇到了冲突，请先手动解决"
+    fi
+}
+
+cmd_merge() {
+    if [ "$2" = "" ]; then
+        warn "缺少参数 <from>"
+        usage
+        exit 1
+    fi
+
+    # sanity checks
+    require_clean_working_tree
+
+    # if [ "$2" = $DEVELOP_BRANCH ]; then
+    #     die "不允许将下游分支 '$2' 的代码合并到上游分支 '$3'"
+    # fi
+
+    # if [ "$2" = $TEST_BRANCH ]; then
+    #     if [ "$3" != $DEVELOP_BRANCH ]; then
+    #         die "不允许将下游分支 '$2' 的代码合并到上游分支 '$3'"
+    #     fi
+    # fi
+
+    if [ "$3" = "" ]; then
+        warn "Missing argument <to>"
+        usage
+        exit 1
+    elif [ "$3" = $MASTER_BRANCH ]; then
+        # if ! is_master_of_branch && ! is_developers_can_push; then
+        #     die "权限不足，无法向 master 分支 push，请提交 pull request"
+        # fi
+        if ! is_developers_can_push; then
+            die "权限不足，无法向 master 分支 push，请提交 pull request"
+        fi
+    fi
+
+    local current_branch=$(git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g')
+    local from_branch=$1$2
+    local to_branch=$3
+
+    require_branch $from_branch
+
+    if ! git_local_branch_exists "$to_branch"; then
+        if git_remote_branch_exists "$ORIGIN/$to_branch"; then
+            git_do checkout -b "$to_branch" "$ORIGIN/$to_branch"
+        else
+            die "分支 $to_branch 不存在"
+        fi
+    fi
+
+    # update local repo with remote changes first
+    if has "$ORIGIN/$from_branch" $(git_remote_branches); then
+        pull_and_stay "$from_branch"
+    fi
+
+    if has "$ORIGIN/$to_branch" $(git_remote_branches); then
+        pull_and_stay "$to_branch"
+    fi
+
+    # 必须
+    git_do checkout "$to_branch"
+
+    if [ "$to_branch" = $MASTER_BRANCH ]; then
+        if git_is_branch_merged_into "$from_branch" $TEST_BRANCH; then
+            echo_black "已经合并过 test 分支了，可以合并"
+        else
+            git_do checkout "$current_branch"
+            die "需要先合并到 test 分支"
+        fi
+        git_do merge --squash "$from_branch"
+    else
+        if [ "$to_branch" = $TEST_BRANCH ]; then
+            if git_is_branch_merged_into $from_branch $DEVELOP_BRANCH; then
+                echo_black "已经合并过 develop 分支了，可以合并"
+            else
+                git_do checkout "$current_branch"
+                die "需要先合并到 develop 分支"
+            fi
+        fi
+        local merge_auto_commit=False
+        if [ -f $HOME/.gitflow/config ]; then
+            local val1=$(cat $HOME/.gitflow/config | grep "merge_auto_commit" | awk -F= '{print $2}')
+            if [ "$val1" = "true" ]; then
+                merge_auto_commit=True
+            fi
+        fi
+
+        if $merge_auto_commit; then
+            git_do merge --no-ff "$from_branch" <<EOF
+\E
+:wq
+EOF
+        else
+            git_do merge --no-ff "$from_branch"
+        fi
+    fi
+
+    if [ $? -ne 0 ]; then
+        # oops.. we have a merge conflict!
+        echo
+        echo "合并有冲突，请使用 IDE 或以下工具手动解决冲突并提交:"
+        echo "    gitflow mergetool"
+        echo "    gitflow commit [-m <message>]"
+        echo "    gitflow push"
+        echo
+        exit 1
+    fi
+    # when no merge conflict is detected, just clean up the feature branch
+    helper_finish_cleanup $from_branch $to_branch $current_branch
+}
+
+cmd_mergeto() {
+    if ! git_current_branch | grep -q "^$1"; then
+        die "当前分支不是一个 ${1%/*} 分支."
+    fi
+    local cb=$(git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g' | sed "s ^$1  g")
+    cmd_merge "$1" "$cb" "$2"
+}
+
+cmd_diff() {
+    if ! git_current_branch | grep -q "^$1"; then
+        die "当前分支不是一个 ${1%/*} 分支."
+    fi
+    if test -z "$2"; then
+        echo_red "没有指定分支，默认 diff master"
+        common_diff $MASTER_BRANCH
+    else
+        common_diff "$2"
+    fi
+}
+
+common_diff() {
+    if test -z "$1"; then
+        die "缺少参数 <base>"
+    fi
+    local base=$(git merge-base "$1" HEAD)
+    if test -z "$base"; then
+        die "找不到分支 $1"
+    fi
+    icdiff --version >/dev/null 2>&1
+    if [ $? == 0 ]; then
+        git_do icdiff "$base"
+    else
+        echo_yellow "可以使用 'brew install icdiff' 获得更友好的 diff 界面"
+        git_do diff "$base"
+    fi
+}
+
+cmd_checkout() {
+    if [ "$2" != "" ]; then
+        local branch
+        if [[ "$2" == $MASTER_BRANCH || "$2" == $TEST_BRANCH || "$2" == $DEVELOP_BRANCH ]]; then
+            branch=$2
+        else
+            branch=$1$2
+        fi
+        git_do checkout "$branch"
+        echo_blue
+        echo_blue "操作概要:"
+        echo_blue "- 已经切到了 '$branch' 分支"
+    else
+        feature_branches=$(echo "$(git_local_branches)" | grep "^$1")
+        if [ -z "$feature_branches" ]; then
+            warn "当前没有任何 ${1%/*} 分支."
+            warn ""
+            warn "你可以通过以下命令开启一个 ${1%/*} 分支:"
+            warn ""
+            warn "    gitflow ${1%/*} start <name> [<base>]"
+            warn ""
+            exit 0
+        fi
+        current_branch=$(git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g')
+        short_names=($(echo "$feature_branches" | sed "s ^$1  g"))
+
+        for ((i = 0; i < ${#short_names[@]}; i++)); do
+            local short_name=${short_names[$i]}
+            local fullname=$1${short_name}
+            if [ "$fullname" = "$current_branch" ]; then
+                echo_green $i". "${short_name}" «current»"
+            else
+                echo $i". "${short_name}
+            fi
+        done
+
+        while True; do
+            read -p "请输入分支前的编号:" num
+            if test -z "$num"; then
+                echo "输入有误"
+            else
+                case $num in
+                "exit")
+                    exit 0
+                    ;;
+                "quit")
+                    exit 0
+                    ;;
+                "e")
+                    exit 0
+                    ;;
+                "q")
+                    exit 0
+                    ;;
+                *)
+                    if test -z "${short_names[$num]}"; then
+                        echo "输入有误"
+                    else
+                        echo
+                        cmd_checkout $1 ${short_names[$num]}
+                        exit 0
+                    fi
+                    ;;
+                esac
+            fi
+        done
+    fi
+}
+
+cmd_del() {
+    local prefix=$1
+    shift
+    local branch=""
+    local remote=False
+    local i=1
+    while [ $i -le $# ]; do
+        case ${!i} in
+        -r)
+            # i=$(expr $i + 1)
+            remote=True
+            ;;
+        *)
+            if [ "$branch" == "" ]; then
+                branch=$prefix${!i}
+            fi
+            ;;
+        esac
+        i=$(expr $i + 1)
+    done
+
+    echo $remote $branch
+
+    if [ "$branch" != "" ]; then
+        if git_local_branch_exists "$branch"; then
+            git_do branch -d "$branch"
+        fi
+        if $remote; then
+            if git_remote_branch_exists "$ORIGIN/$branch"; then
+                git_do fetch -p origin
+                git_do branch -r -d origin/$branch
+                git_do push origin :$branch
+                # git_do push origin --delete $branch
+            fi
+        fi
+
+        echo_blue
+        echo_blue "操作概要:"
+        echo_blue "- ${1%/*} 的本地分支 '$branch' 已经被删除"
+        if $remote; then
+            echo_blue "- ${1%/*} 的远端分支的 '$branch' 已经被删除"
+        fi
+    else
+        die "缺少参数 <name>"
+    fi
+}
+
+cmd_sync() {
+    if ! git_current_branch | grep -q "^$1"; then
+        die "当前分支不是一个 ${1%/*} 分支."
+    fi
+    local cb=$(git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g' | sed "s ^$1  g")
+
+    local base=${2:-$MASTER_BRANCH}
+    if [ "$2" = $DEVELOP_BRANCH -o "$2" = $TEST_BRANCH ]; then
+        die "不允许将 '$2' 的代码同步到当前分支"
+    fi
+
+    require_branch $base
+    require_clean_working_tree
+
+    pull_and_back $base
+
+    git_do merge --no-ff $base
+    if [ $? -ne 0 ]; then
+        # oops.. we have a merge conflict!
+        # write the given $DEVELOP_BRANCH to a temporary file (we need it later)
+        warn
+        warn "合并有冲突，请使用 IDE 或以下工具解决冲突并提交:"
+        warn "    gitflow mergetool"
+        warn "    gitflow commit [-m <message>]"
+        warn
+        exit 1
+    else
+        echo_blue
+        echo_blue "操作概要:"
+        echo_blue "- 切到了 '$base' 并拉取了最新代码"
+        echo_blue "- 已将 '$base' 分支合并到了 '$branch' 分支上"
+        echo_blue "- 你现在处于分支 '$branch' 上"
+        echo_blue
+    fi
+}
+
+feature() {
+    local prefix="feature/"
+    case $1 in
+    "help")
+        cmd_usage "feature"
+        exit 0
+        ;;
+    "" | "list")
+        cmd_list $prefix
+        ;;
+    "start")
+        shift
+        cmd_start $prefix "$@"
+        ;;
+    "mergeto" | "mt")
+        shift
+        cmd_mergeto $prefix "$@"
+        ;;
+    "merge" | "m")
+        shift
+        cmd_merge $prefix "$@"
+        ;;
+    "diff")
+        cmd_diff $prefix "$2"
+        ;;
+    "checkout" | "co")
+        cmd_checkout $prefix "$2"
+        ;;
+    "delete" | "del")
+        shift
+        cmd_del $prefix "$@"
+        ;;
+    "pull-request" | "pr")
+        shift
+        cmd_pull_request $prefix "$@"
+        ;;
+    "sync")
+        shift
+        cmd_sync $prefix "$@"
+        ;;
+    *)
+        die "命令不支持：$1"
+        ;;
+    esac
+}
+
+hotfix() {
+    local prefix="hotfix/"
+    case $1 in
+    "help")
+        cmd_usage "hotfix"
+        exit 0
+        ;;
+    "" | "list")
+        cmd_list $prefix
+        ;;
+    "start")
+        shift
+        cmd_start $prefix "$@"
+        ;;
+    "mergeto" | "mt")
+        shift
+        cmd_mergeto $prefix "$@"
+        ;;
+    "merge" | "m")
+        shift
+        cmd_merge $prefix "$@"
+        ;;
+    "diff")
+        cmd_diff $prefix "$2"
+        ;;
+    "checkout" | "co")
+        cmd_checkout $prefix "$2"
+        ;;
+    "delete" | "del")
+        shift
+        cmd_del $prefix "$@"
+        ;;
+    "pull-request" | "pr")
+        shift
+        cmd_pull_request $prefix "$@"
+        ;;
+    "sync")
+        shift
+        cmd_sync $prefix "$@"
+        ;;
+    *)
+        die "命令不支持：$1"
+        ;;
+    esac
+}
+
+helper_finish_cleanup() {
+
+    if [ "$2" = "master" ]; then
+        echo_blue
+        echo_blue "操作概要:"
+        echo_blue "- 已将 $from_branch 合并到 master 分支"
+        echo_blue "- 因为 master 分支采用 --squash 方式进行 merge，请手动提交这次合并："
+        echo_blue "    gitflow commit [-m <message>]"
+        echo_blue "    gitflow push"
+        echo_blue
+    else
+        local auto_push=False
+        local stay_branch=$2
+        if [ -f $HOME/.gitflow/config ]; then
+            local val1=$(cat $HOME/.gitflow/config | grep "merge_auto_push" | awk -F= '{print $2}')
+            if [ "$val1" = "true" ]; then
+                git_do push
+                auto_push=True
+            fi
+
+            local val2=$(cat $HOME/.gitflow/config | grep "merge_stay_branch" | awk -F= '{print $2}')
+            case $val2 in
+            "from")
+                git_do checkout $1
+                stay_branch=$1
+                ;;
+            "to")
+                git_do checkout $2
+                stay_branch=$2
+                ;;
+            "current")
+                git_do checkout $3
+                stay_branch=$3
+                ;;
+            esac
+        fi
+
+        echo_blue
+        echo_blue "操作概要:"
+        echo_blue "- ${1%/*} 分支 '$1' 已经被 merge 进了 '$2'"
+        echo_blue "- ${1%/*} 分支 '$1' 未被删除，依旧可用"
+        if $auto_push; then
+            echo_blue "- 此次合并已经被 push 到了远端 origin"
+        fi
+        echo_blue "- 你现在已处于分支 '$stay_branch'"
+        echo_blue
+    fi
+
+    # # delete branch
+    # git_do push "$ORIGIN" ":refs/heads/$1"
+
+}
+
+
+cmd_taglist() {
+    git_do fetch origin --tags
+    local project=$(get_project)
+    git tag | xargs -I{} git log --date=format:"%Y-%m-%d %H:%M:%S" --format=format:"%ai|{}    %s  @%an (%ad)%n" -1 {} | sort -r | awk -F"|" '{print $2}' | head -5
+    echo
+    echo "只显示最近的前5条记录（按时间倒序排列）"
+    echo
+}
+
+version_gt() { test "$(echo "$@" | tr " " "\n" | sort -V | head -n 1)" != "$1"; }
+
+
+cmd_config() {
+    echo
+    echo "请根据您的使用习惯配置 gitflow 在 merge 后的行为"
+    echo_red "注意"
+    echo_red " - 以下配置项均不会影响往 master 分支的合并"
+    echo
+    echo "merge 后自动 push："
+    echo "  1. 不需要自动进行 push"
+    echo "  2. 需要自动进行 push"
+    printf "请选择："
+    read merge_auto_push
+    # shellcheck disable=SC2078
+    while [[ True ]]; do
+        case $merge_auto_push in
+        1)
+            merge_auto_push="false"
+            break
+            ;;
+        2)
+            merge_auto_push="true"
+            break
+            ;;
+        *)
+            printf "输入有误，请重新输入："
+            read merge_auto_push
+            ;;
+        esac
+    done
+
+    echo
+    echo "merge 后切到哪个分支？"
+    echo "  1. from 分支（功能分支、修复分支）"
+    echo "  2. to 分支（develop、test 分支）"
+    echo "  3. 执行 gitflow 命令时所在分支（尽量不要选该选项，除非你明确知道其使用场景）"
+    printf "请选择："
+    read merge_stay_branch
+    # shellcheck disable=SC2078
+    while [[ True ]]; do
+        case $merge_stay_branch in
+        1)
+            merge_stay_branch="from"
+            break
+            ;;
+        2)
+            merge_stay_branch="to"
+            break
+            ;;
+        3)
+            merge_stay_branch="current"
+            break
+            ;;
+        *)
+            printf "输入有误，请重新输入："
+            read merge_stay_branch
+            ;;
+        esac
+    done
+
+    echo
+    echo "merge 无冲突时自动保存 commit（即自动保存并退出 vim）？"
+    echo "  1. 自动保存"
+    echo "  2. 手动保存"
+    printf "请选择："
+    read merge_auto_commit
+    # shellcheck disable=SC2078
+    while [[ True ]]; do
+        case $merge_auto_commit in
+        1)
+            merge_auto_commit="true"
+            break
+            ;;
+        2)
+            merge_auto_commit="false"
+            break
+            ;;
+        *)
+            printf "输入有误，请重新输入："
+            read merge_auto_commit
+            ;;
+        esac
+    done
+
+    cat <<EOF >$HOME/.gitflow/config
+merge_auto_push=$merge_auto_push
+merge_stay_branch=$merge_stay_branch
+merge_auto_commit=$merge_auto_commit
+EOF
+}
+
+cmd_usage() {
+    echo "usage: gitflow $1 list                             列出所有的 $1 分支"
+    echo "       gitflow $1 start <name> [<base>]            开始一个名为 $1/<name> 的新分支"
+    echo "       gitflow $1 mergeto <to>                     将当前分支 merge 到 <to> 分支里，命令简写 mt"
+    echo "       gitflow $1 merge <from> <to>                将 $1/<from> 分支 merge 到 <to> 分支里，命令简写 m"
+    echo "       gitflow $1 diff <develop|test|master>       将当前分支与固定分支做 diff"
+    echo "       gitflow $1 checkout [<name>]                切到 $1/<name> 分支，命令简写 co"
+    echo "       gitflow $1 pull-request [[<source> <target>] <title> <desc>]    命令简写 pr"
+    echo "       gitflow $1 (del)ete [-r] <name>             删除本地或远程(-r)的 $1/<name> 分支，命令简写 del"
+    echo "       gitflow $1 sync [<base>]                    将 <base> 的最新代码合并到当前分支，<base> 默认为 master"
+}
+
+usage_main() {
+    echo "usage: gitflow <subcommand>"
+    echo
+    echo_blue "【子命令】"
+    echo "   (f)eature             管理功能分支（gf f help 查看详情）"
+    echo "   (h)otfix              管理修复分支（gf h help 查看详情）"
+    echo
+    echo_blue "【这部分命令与 git 原生命令相同】"
+    echo "   status"
+    echo "   checkout <branch>              简写 co"
+    echo "   add <files...>"
+    echo "   commit [[-a] -m <message>]     简写 cm"
+    echo "   push [--set-upstream origin <branch>]"
+    echo
+    echo_blue "【tag 相关】"
+    echo "   tag <name> <message>  打 tag"
+    echo "   taglist               查看已有 tag 列表"
+    echo
+    echo_blue "【部署】"
+    echo "   (d)eploy <name>       触发 Jenkins 部署"
+    echo
+    echo_blue "【gitflow 相关】"
+    echo "   config                配置 gitflow"
+    echo "   upgrade               更新 gitflow"
+    echo "   version               查看当前 gitflow 版本"
+    echo "   changelog             查看更新日志"
+    echo
+}
+
+main() {
+    if [ "$1" != "upgrade" ]; then
+        check_update
+    fi
+    if [ "$1" = "help" ] || [ "$1" = "" ]; then
+        usage_main
+        exit 0
+    fi
+
+    case $1 in
+    "init")
+        require_git_repo
+        init
+        ;;
+    "feature" | "f" | "(f)eature")
+        require_git_repo
+        shift
+        feature "$@"
+        ;;
+    "hotfix" | "h" | "(h)otfix")
+        require_git_repo
+        shift
+        hotfix "$@"
+        ;;
+    "add")
+        require_git_repo
+        shift
+        git_do add "$@"
+        ;;
+    "commit" | "cm")
+        require_git_repo
+        shift
+        git_do commit "$@"
+        ;;
+    "push")
+        require_git_repo
+        shift
+        if echo "$@" | egrep -wq "\-f|\-\-force"; then
+            die "不能使用 -f 或 --force 强推"
+        fi
+        ret=$(git push "$@" 2>&1)
+        if echo "$ret" | grep -q "git push --set-upstream origin"; then
+            local current_branch=$(git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g')
+            git_do push --set-upstream origin $current_branch
+        else
+            echo "$ret"
+        fi
+        ;;
+    "tag")
+        require_git_repo
+        shift
+
+        # 避免有些同学错误输入，做个兼容
+        if [ "$1" = "list" -o "$1" = "l" ] && [ "$2" = "" ]; then
+            cmd_taglist
+            exit 0
+        fi
+
+        require_clean_working_tree
+
+        if [[ $(git_current_branch) != "$MASTER_BRANCH" ]]; then
+            die "只能在 $MASTER_BRANCH 分支打 tag"
+        fi
+
+        git_do fetch
+        require_branches_equal "$MASTER_BRANCH" "$ORIGIN/$MASTER_BRANCH"
+
+        if [ "$1" = "" -o "$2" = "" ]; then
+            die "缺少参数 <name> 或 <message>"
+        fi
+        if [[ ! $1 =~ ^v.* ]]; then
+            die "tag 名应以 v 开头，否则 Jenkins 上不显示"
+        fi
+        git_do fetch origin --tags
+        git_do tag -a "$1" -m "$2"
+        if [ $? != 0 ]; then
+            die "tag 创建失败"
+        else
+            git_do push origin "$1"
+            if [ $? == 0 ]; then
+                echo_blue
+                echo_blue "操作概要:"
+                echo_blue "- 成功创建了一个新 tag: $1"
+                echo_blue "- 已将此 tag push 到了远端 origin"
+                echo_blue
+            else
+                die "tag 创建成功，但推送到远端时失败"
+            fi
+        fi
+        ;;
+    "taglist")
+        require_git_repo
+        cmd_taglist
+        ;;
+    "merge")
+        require_git_repo
+        shift
+        if [ "$1" = "--abort" ]; then
+            git_do merge --abort
+            exit 0
+        fi
+        die "请使用 gitflow feature/hotfix merge <from> <to>"
+        ;;
+    "version")
+        echo "gitflow version: $(cat $HOME/.gitflow/version)"
+        ;;
+    "config")
+        cmd_config
+        ;;
+    "co")
+        git_do checkout "$2"
+        ;;
+    "diff")
+        if test -z "$2"; then
+            echo_red "没有指定分支，默认 diff master"
+            common_diff $MASTER_BRANCH
+        else
+            common_diff "$2"
+        fi
+        ;;
+    *)
+        require_git_repo
+        git_do "$@"
+        ;;
+    esac
+}
+
+main "$@"
