@@ -1,4 +1,4 @@
-GitFlow Changelog
+Wanba GitFlow Changelog
 ===========================================
 1.1.5
     - 有master权限也可以提交pr

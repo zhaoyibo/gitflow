@@ -1,7 +1,7 @@
 #!/bin/sh
 # sh -c "$(curl -fsSL http://gitflow.wb-intra.com/gitflow-installer.sh)" && source .zshrc
 
-DOMAIN="https://raw.githubusercontent.com/zhaoyibo/spring-cloud-study/master"
+DOMAIN="http://gitflow.wb-intra.com"
 ENV_FILE=""
 IS_ZSH=0
 
@@ -12,6 +12,17 @@ if [[ -n $(env | grep "SHELL" | grep "zsh") ]]; then
 else
   echo "using bash"
   ENV_FILE=$HOME/.bash_profile
+fi
+
+if [ -z "$(grep "GITFLOW_ACCESS_TOKEN" $ENV_FILE)" ]; then
+  token=$GITFLOW_ACCESS_TOKEN
+  if [ -z $GITFLOW_ACCESS_TOKEN ]; then
+    echo "Gitlab Access Token 没有设置"
+    echo "请参考 http://wiki.wb-intra.com/pages/viewpage.action?pageId=20260208 获取"
+    printf "并输入你的 Gitlab Access Token: "
+    read token
+  fi
+  echo "\nexport GITFLOW_ACCESS_TOKEN='$token'" >>$ENV_FILE
 fi
 
 GITFLOW_HOME=$HOME/.gitflow

@@ -16,8 +16,11 @@ _gitflow ()
 			subcommands=(
 				'feature: 管理功能分支'
 				'hotfix: 管理修复分支'
+				'deploy: 部署测试环境的服务'
 				'config: 配置 gitflow'
 				'version: 显示版本号'
+				'changelog: 显示 gitflow 的更新记录'
+				'upgrade: 升级 gitflow'
 				'add: 添加文件到暂存区'
 				'commit: 提交'
 				'push: 推到远端'
@@ -36,7 +39,16 @@ _gitflow ()
 				(version)
 					;;
 
+				(changelog)
+					;;
+
+				(upgrade)
+					;;
+
 				(config)
+					;;
+
+				(deploy|d)
 					;;
 
 				(hotfix|h)

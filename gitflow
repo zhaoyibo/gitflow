@@ -5,6 +5,8 @@ MASTER_BRANCH="master"
 TEST_BRANCH="test"
 DEVELOP_BRANCH="develop"
 
+ENDPOINT='http://git.wb-intra.com/api/v4'
+
 ########## common start
 
 #DOT_GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
@@ -238,8 +240,201 @@ get_project() {
     fi
 }
 
+get_project_id() {
+    local project=$(get_project)
+    local project_id=$(curl -s --header "PRIVATE-TOKEN: $GITFLOW_ACCESS_TOKEN" "$ENDPOINT/projects/$(urlencode $project)" | awk -F'"id":' '{print $2}' | awk -F, '{print $1}')
+    if [ $? -ne 0 ]; then
+        warn "无法访问 Gitlab Open API，请检查网络！"
+    fi
+    echo $project_id
+}
+
+function is_developers_can_push() {
+    local project_id=$(get_project_id)
+    if [ -n "$project_id" ]; then
+        local json=$(curl -s --header "PRIVATE-TOKEN: $GITFLOW_ACCESS_TOKEN" "$ENDPOINT/projects/$project_id/repository/branches/master")
+        local protected=$(echo $json | awk -F'"master"' '{print $2}' | awk -F'"protected":' '{print $2}' | awk -F, '{print $1}')
+        # local developers_can_push=$(echo $json | awk -F'"master"' '{print $2}' | awk -F'"can_push":' '{print $2}' | awk -F, '{print $1}')
+        local can_push=$(echo $json | awk -F'"can_push":' '{print $2}' | awk -F, '{print $1}')
+
+        if [[ $can_push =~ "true" ]]; then
+            echo_black "debug: You can push 'master' branch."
+            return 0
+        else
+            echo_black "debug: You can not push 'master' branch."
+            return 1
+        fi
+        if [ "$protected" != "true" ]; then
+            warn "本仓库的 master 分支未设置 protected，请联系运维同学"
+        fi
+    fi
+    # echo_black "debug: Developers can push 'master' branch"
+    return 0
+}
+
+function is_master_of_branch() {
+    local project_id=$(get_project_id)
+    if [ -n "$project_id" ]; then
+        local json=$(curl -s --header "PRIVATE-TOKEN: $GITFLOW_ACCESS_TOKEN" "$ENDPOINT/projects/$project_id/protected_branches")
+        if [ -n "$(echo $json | grep '403 Forbidden')" ]; then
+            echo_black "debug: You are not the Maintainer of this repo."
+            return 1
+        fi
+    fi
+    echo_black "debug: You are the Maintainer of this repo."
+    return 0
+}
+
 ########## common end
 
+cmd_pull_request() {
+
+    subcmd="f"
+    if [ "$1" = "hotfix/" ]; then
+        subcmd="h"
+    fi
+
+    local source_branch=""
+    local target_branch=""
+    local title=""
+    local desc=""
+    if [ $# -eq 3 ]; then
+        if ! git_current_branch | grep -q "^$1"; then
+            warn "当前分支不是一个 ${1%/*} 分支."
+            warn
+            warn "请切到对应的 feature 或 hotfix 分支后再执行命令"
+            warn "或使用命令 gf $subcmd pr [<source> <target>] <title> <desc>"
+            warn "或访问页面 http://git.wb-intra.com/$(get_project)/merge_requests/new 创建"
+            exit 1
+        fi
+        source_branch=$(git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g')
+        target_branch=$MASTER_BRANCH
+        title="${2:-source_branch}"
+        desc="${3:-NONE DESC}"
+    elif [ $# -eq 5 ]; then
+        source_branch="$prefix$2"
+        target_branch="$3"
+        title="${4:-source_branch}"
+        desc="${5:-NONE DESC}"
+    else
+        warn "参数有误，请使用命令 gf $subcmd pr [<source> <target>] <title> <desc>"
+        warn "或访问页面 http://git.wb-intra.com/$(get_project)/merge_requests/new 创建"
+        exit 1
+    fi
+
+    #echo $source_branch $target_branch $title $desc
+    # if is_master_of_branch || is_developers_can_push; then
+    #     die "可以直接向 master 分支 merge/push"
+    # fi
+    if is_developers_can_push; then
+        #die "可以直接向 master 分支 merge/push"
+        echo
+        echo "可以直接向 master 分支 merge/push，是否继续提交？"
+        echo "  1. 继续提交pr"
+        echo "  2. 直接merge到master分支"
+        printf "请选择："
+        read continue_pull_request
+        while [[ True ]]; do
+            case $continue_pull_request in
+            1)
+                break
+                ;;
+            2)
+                cmd_mergeto $prefix $MASTER_BRANCH
+                exit 0
+                ;;
+            *)
+                printf "输入有误，请重新输入："
+                read continue_pull_request
+                ;;
+            esac
+        done
+    fi
+
+    require_remote_branch $ORIGIN/$source_branch
+    require_remote_branch $ORIGIN/$target_branch
+
+    require_clean_working_tree
+
+    local project=$(get_project)
+    local project_id=$(get_project_id)
+
+    local action="projects/$project_id/merge_requests"
+
+    title=$(urlencode "$title")
+    desc=$(urlencode "$desc")
+    local data="source_branch=$source_branch&target_branch=$target_branch&title=$title&description=$desc"
+
+    local names=()
+
+    local members=$(curl -s --header "PRIVATE-TOKEN: $GITFLOW_ACCESS_TOKEN" $ENDPOINT/projects/$project_id/members)
+    if [ "$members" != '[]' ]; then
+        local tmp=$(echo "$members" | awk '{n=split($0,a,"},{");for (i in a) print a[i]}' | grep '"access_level":40' | grep -v "林辽原")
+        for i in $tmp; do
+            t=$(echo "$i" | awk -F'"name":"' '{print $2}')
+            names+=(${t%%\"*})
+        done
+    else
+        echo "抱歉，无法自动获取本仓库的 Maintainer，请前往网页手动选择 Assignee"
+    fi
+
+    if [ ${#names[*]} -gt 0 ]; then
+        echo "本仓库的所有 Maintainer："
+        for ((i = 0; i < ${#names[@]}; i++)); do
+            echo $i"." ${names[$i]}
+        done
+
+        echo
+        while True; do
+            read -p "请输入 Assignee 的编号：" name_num
+            case $projectnum in
+            "exit")
+                exit 0
+                ;;
+            "quit")
+                exit 0
+                ;;
+            "e")
+                exit 0
+                ;;
+            "q")
+                exit 0
+                ;;
+            *)
+                if test -z "${names[$name_num]}"; then
+                    echo "输入有误"
+                else
+                    local select_name=${names[$name_num]}
+                    local assignee_id=""
+                    for i in $tmp; do
+                        if [[ $i =~ $select_name ]]; then
+                            assignee_id=$(echo "$i" | awk -F'"id":' '{print $2}')
+                            assignee_id=(${assignee_id%%,*})
+                            break
+                        fi
+                    done
+                    # echo "$assignee_id"
+                    data="$data&assignee_id=$assignee_id"
+                    break
+                fi
+                ;;
+            esac
+        done
+    fi
+
+    # for debug
+    # echo "curl -s --header 'PRIVATE-TOKEN: $GITFLOW_ACCESS_TOKEN' --data '$data' '$ENDPOINT/$action'"
+
+    local json=$(curl -s --header "PRIVATE-TOKEN: $GITFLOW_ACCESS_TOKEN" --data "$data" "$ENDPOINT/$action")
+    local merge_request_id=$(echo $json | grep -o '"iid":[0-9]\+' | grep -o '[0-9]\+')
+
+    if [ -n $BROWSER ]; then
+        # 当前shell如果存在 BROWSER 变量
+        $($BROWSER "http://git.wb-intra.com/$project/merge_requests/$merge_request_id") 2>/dev/null
+    fi
+
+    echo "http://git.wb-intra.com/$project/merge_requests/$merge_request_id/diffs"
+}
 
 init() {
 
@@ -817,6 +1012,57 @@ helper_finish_cleanup() {
 
 }
 
+cmd_deploy() {
+    if [ $# -eq 0 ]; then
+        die "缺少参数 <name>"
+    fi
+    if [ $# -gt 1 ]; then
+        die "参数过多"
+    fi
+    project=$1
+    searchproject=()
+    getproject=$(curl http://testjenkins.wb-intra.com/search/suggest?query=$project --user testuser:testuser 2>>/dev/null | awk -F',' '{n=split($0,a,",");for (i in a) print a[i]}' | egrep -v "hudson.search.Search$Result|-rollck")
+    if [ $? -ne 0 ]; then
+        die "执行查询失败，重试后未果，可以联系管理员"
+    fi
+    if [ "$getproject" = '"suggestions":[]}' ]; then
+        die "查询结果为空"
+    fi
+    for i in $getproject; do
+        aa=${i##*\":\"}
+        searchproject+=(${aa%\"*})
+    done
+    for ((i = 0; i < ${#searchproject[@]}; i++)); do
+        echo $i"." ${searchproject[$i]}
+    done
+    while True; do
+        read -p "输入编号进行部署:" projectnum
+        case $projectnum in
+        "exit")
+            exit 0
+            ;;
+        "quit")
+            exit 0
+            ;;
+        "e")
+            exit 0
+            ;;
+        "q")
+            exit 0
+            ;;
+        *)
+            if test -z "${searchproject[$projectnum]}"; then
+                echo "输入有误"
+            else
+                echo "开始部署${searchproject[$projectnum]}..."
+                curl -XPOST http://testjenkins.wb-intra.com/job/${searchproject[$projectnum]}/buildWithParameters --user testuser:testuser -d '{"parameter":[{"name":"branch","value":"test"}]'
+                echo "请前往查看部署情况：http://testjenkins.wb-intra.com/job/${searchproject[$projectnum]}/"
+                exit 0
+            fi
+            ;;
+        esac
+    done
+}
 
 cmd_taglist() {
     git_do fetch origin --tags
@@ -824,11 +1070,29 @@ cmd_taglist() {
     git tag | xargs -I{} git log --date=format:"%Y-%m-%d %H:%M:%S" --format=format:"%ai|{}    %s  @%an (%ad)%n" -1 {} | sort -r | awk -F"|" '{print $2}' | head -5
     echo
     echo "只显示最近的前5条记录（按时间倒序排列）"
+    echo "查看全部 tag 请访问 http://git.wb-intra.com/$project/tags"
     echo
 }
 
 version_gt() { test "$(echo "$@" | tr " " "\n" | sort -V | head -n 1)" != "$1"; }
 
+check_update() {
+    local remote_version=$(curl -s http://gitflow.wb-intra.com/version -m 1)
+    if [ $? -eq 0 ]; then
+        local local_version="0.0.0"
+        if [ -f "$HOME/.gitflow/version" ]; then
+            local_version=$(cat "$HOME/.gitflow/version")
+        fi
+
+        if version_gt $remote_version $local_version; then
+            warn "本地版本为：${local_version}"
+            warn "最新版本为：${remote_version}"
+            warn "更新日志：http://gitflow.wb-intra.com/Changelog.txt"
+            warn
+            die "请更新至最新版：gitflow upgrade"
+        fi
+    fi
+}
 
 cmd_config() {
     echo
@@ -1063,11 +1327,48 @@ main() {
         fi
         die "请使用 gitflow feature/hotfix merge <from> <to>"
         ;;
+    "deploy" | "d" | "(d)eploy")
+        shift
+        cmd_deploy "$@"
+        ;;
+    "upgrade")
+        local remote_version=$(curl -s http://gitflow.wb-intra.com/version -m 1)
+        if [ $? -ne 0 ]; then
+            die "无法获取服务器在线版本号，请检查网络后重试！"
+        fi
+        local local_version="0.0.0"
+        if [ -f "$HOME/.gitflow/version" ]; then
+            local_version=$(cat "$HOME/.gitflow/version")
+        fi
+        if version_gt $remote_version $local_version; then
+            echo "服务器在线版本号：$remote_version 高于本地版本号：${local_version}，开始更新"
+            echo "..."
+
+            curl -s -o $HOME/.gitflow/bin/gitflow http://gitflow.wb-intra.com/gitflow \
+                && chmod +x $HOME/.gitflow/bin/gitflow \
+                && curl -s -o $HOME/.gitflow/version http://gitflow.wb-intra.com/version \
+                && curl -s -o $HOME/.gitflow/completion/_gitflow http://gitflow.wb-intra.com/_gitflow
+
+            if [ $? -eq 0 ]; then
+                echo "更新完毕，当前本地版本号："$(cat "$HOME/.gitflow/version")
+            else
+                die "更新失败，请参照 http://wiki.wb-intra.com/pages/viewpage.action?pageId=20260916 手动更新"
+            fi
+        else
+            echo "服务器在线版本号：$remote_version 和本地版本号：${local_version} 相同！"
+            echo "退出更新！"
+        fi
+        ;;
     "version")
         echo "gitflow version: $(cat $HOME/.gitflow/version)"
         ;;
     "config")
         cmd_config
+        ;;
+    "changelog")
+        curl -s http://gitflow.wb-intra.com/Changelog.txt | head -10
+        echo
+        echo "完整日志请查看 http://gitflow.wb-intra.com/Changelog.txt"
         ;;
     "co")
         git_do checkout "$2"
