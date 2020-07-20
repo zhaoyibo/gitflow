@@ -16,13 +16,13 @@
 **如果终端安装的是 zsh：**
 
 ```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/zhaoyibo/spring-cloud-study/master/gitflow-installer.sh)" && source $HOME/.zshrc
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/zhaoyibo/gitflow/master/gitflow-installer.sh)" && source $HOME/.zshrc
 ```
 
 **如果是自带的 bash：（bash 不支持自动补全）**
 
 ```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/zhaoyibo/spring-cloud-study/master/gitflow-installer.sh)" && source $HOME/.bash_profile
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/zhaoyibo/gitflow/master/gitflow-installer.sh)" && source $HOME/.bash_profile
 ```
 
 配置使用习惯

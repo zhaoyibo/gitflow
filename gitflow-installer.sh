@@ -1,7 +1,7 @@
 #!/bin/sh
 # sh -c "$(curl -fsSL http://gitflow.wb-intra.com/gitflow-installer.sh)" && source .zshrc
 
-DOMAIN="https://raw.githubusercontent.com/zhaoyibo/spring-cloud-study/master"
+DOMAIN="https://raw.githubusercontent.com/zhaoyibo/gitflow/master"
 ENV_FILE=""
 IS_ZSH=0
 
