@@ -1,5 +1,11 @@
-GitFlow Changelog
+Wanba GitFlow Changelog
 ===========================================
+1.1.7
+    - 往 master 合并代码的方式由 squash 改为可选择
+
+1.1.6
+    - fix 当 push 失败时现在有了正确提示
+
 1.1.5
     - 有master权限也可以提交pr
     - 兼容http协议
