@@ -1,4 +1,3 @@
-[TOC]
 
 # Gitflow 使用说明
 
@@ -86,7 +85,7 @@ usage: gitflow <subcommand>
 安装 icdiff 即可
 
 ```
-`brew install icdiff`
+brew install icdiff
 ```
 
 ## 分支约定
@@ -116,7 +115,7 @@ usage: gitflow <subcommand>
 
 ### 命令速查
 
-![pic](https://cdn.jsdelivr.net/gh/zhaoyibo/resource@gh-pages/img/1595239001273.jpg)
+![](https://cdn.jsdelivr.net/gh/zhaoyibo/resource@gh-pages/img/1595239001273.jpg)
 
 ### 主命令说明
 
@@ -252,7 +251,7 @@ usage: gitflow feature start <name> [<base>]            开始一个名为 featu
 - 如果不是 `master` 分支，用 `merge --no-ff` 进行合并，并自动 push（不使用 fast-forward 方式合并，保留源分支的 commit 历史）
 - 如果是 `master` 分支，用 `merge --squash` 进行合并（需要手动提交并 push）（使用 squash 方式合并，把多次分支 commit 历史压缩为一次）
 
-![pic](https://cdn.jsdelivr.net/gh/zhaoyibo/resource@gh-pages/img/1595238981713.jpg)
+![](https://cdn.jsdelivr.net/gh/zhaoyibo/resource@gh-pages/img/1595238981713.jpg)
 
 
 
@@ -292,3 +291,9 @@ usage: gitflow feature start <name> [<base>]            开始一个名为 featu
 
 命令同 feature，不再一一列举。
 
+## alias
+```
+unalias md
+alias md="git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g' | awk -F'/' '{print \$1}' | xargs -I{} gitflow {} mergeto develop"
+alias mt="git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g' | awk -F'/' '{print \$1}' | xargs -I{} gitflow {} mergeto test"
+```
